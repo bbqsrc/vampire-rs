@@ -1,0 +1,24 @@
+[package]
+name = "vampire-cli"
+version.workspace = true
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "CLI tool for managing Vampire Android test projects"
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "vampire"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+glob = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+pathos = "0.3"
