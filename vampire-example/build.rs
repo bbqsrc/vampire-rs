@@ -9,5 +9,8 @@ fn main() {
     // Create the directory for fragment files
     fs::create_dir_all(&vampire_dir).unwrap();
 
+    // Tell Cargo about the vampire cfg flag
+    println!("cargo:rustc-check-cfg=cfg(vampire)");
+
     println!("cargo:rerun-if-changed=src/lib.rs");
 }

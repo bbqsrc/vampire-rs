@@ -17,8 +17,10 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
         false
     };
 
-    // Use module path to create unique test name
-    let test_name_with_module = format!("{}::{}", module_path!(), fn_name_str);
+    // Generate code that will get the actual module path at expansion site
+    let test_name_with_module = quote! {
+        concat!(module_path!(), "::", #fn_name_str)
+    };
 
     // Generate simple wrapper function name
     let wrapper_fn_name = syn::Ident::new(

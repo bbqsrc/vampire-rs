@@ -121,8 +121,19 @@ async fn build_project(lib_only: bool) {
     // Build for Android target
     println!("📱 Building for {}", NDK_TARGET);
 
+    // Get library name to make it available as extern
+    let lib_name = match get_library_name() {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let rustflags = format!("--cfg vampire --extern {}", lib_name);
+
     let android_build = tokio::process::Command::new("cargo")
-        .env("RUSTFLAGS", "--cfg vampire")
+        .env("RUSTFLAGS", &rustflags)
         .args(&["ndk", "-t", NDK_TARGET, "build", "--release"])
         .output()
         .await;
