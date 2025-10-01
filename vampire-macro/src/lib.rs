@@ -56,34 +56,74 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
+    // Check if function returns Result
+    let returns_result = matches!(&input_fn.sig.output, syn::ReturnType::Type(_, ty)
+        if matches!(**ty, syn::Type::Path(ref path)
+            if path.path.segments.last().map(|s| s.ident == "Result").unwrap_or(false)));
+
     let wrapper_impl = if is_async {
         // Async test wrapper
-        quote! {
-            #[cfg(target_os = "android")]
-            fn #wrapper_fn_name() -> bool {
-                let result = std::panic::catch_unwind(|| {
-                    let runtime = tokio::runtime::Runtime::new().unwrap();
-                    runtime.block_on(#fn_name())
-                });
+        if returns_result {
+            quote! {
+                #[cfg(target_os = "android")]
+                fn #wrapper_fn_name() -> bool {
+                    let result = std::panic::catch_unwind(|| {
+                        let runtime = tokio::runtime::Runtime::new().unwrap();
+                        runtime.block_on(async {
+                            #fn_name().await.unwrap()
+                        })
+                    });
 
-                match result {
-                    Ok(_) => !#should_panic,
-                    Err(_) => #should_panic,
+                    match result {
+                        Ok(_) => !#should_panic,
+                        Err(_) => #should_panic,
+                    }
+                }
+            }
+        } else {
+            quote! {
+                #[cfg(target_os = "android")]
+                fn #wrapper_fn_name() -> bool {
+                    let result = std::panic::catch_unwind(|| {
+                        let runtime = tokio::runtime::Runtime::new().unwrap();
+                        runtime.block_on(#fn_name())
+                    });
+
+                    match result {
+                        Ok(_) => !#should_panic,
+                        Err(_) => #should_panic,
+                    }
                 }
             }
         }
     } else {
         // Sync test wrapper
-        quote! {
-            #[cfg(target_os = "android")]
-            fn #wrapper_fn_name() -> bool {
-                let result = std::panic::catch_unwind(|| {
-                    #fn_name()
-                });
+        if returns_result {
+            quote! {
+                #[cfg(target_os = "android")]
+                fn #wrapper_fn_name() -> bool {
+                    let result = std::panic::catch_unwind(|| {
+                        #fn_name().unwrap()
+                    });
 
-                match result {
-                    Ok(_) => !#should_panic,
-                    Err(_) => #should_panic,
+                    match result {
+                        Ok(_) => !#should_panic,
+                        Err(_) => #should_panic,
+                    }
+                }
+            }
+        } else {
+            quote! {
+                #[cfg(target_os = "android")]
+                fn #wrapper_fn_name() -> bool {
+                    let result = std::panic::catch_unwind(|| {
+                        #fn_name()
+                    });
+
+                    match result {
+                        Ok(_) => !#should_panic,
+                        Err(_) => #should_panic,
+                    }
                 }
             }
         }

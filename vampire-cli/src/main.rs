@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 mod android_sdk;
 mod host_templates;
@@ -53,20 +53,24 @@ fn get_library_name() -> Result<String, String> {
     let content = fs::read_to_string(cargo_toml_path)
         .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
 
-    let cargo_toml: toml::Value = toml::from_str(&content)
-        .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
+    let cargo_toml: toml::Value =
+        toml::from_str(&content).map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
 
     // Try to get lib name from [lib] section first
-    if let Some(lib_name) = cargo_toml.get("lib")
+    if let Some(lib_name) = cargo_toml
+        .get("lib")
         .and_then(|lib| lib.get("name"))
-        .and_then(|name| name.as_str()) {
+        .and_then(|name| name.as_str())
+    {
         return Ok(lib_name.to_string());
     }
 
     // Fallback to package name with hyphens replaced by underscores
-    if let Some(package_name) = cargo_toml.get("package")
+    if let Some(package_name) = cargo_toml
+        .get("package")
         .and_then(|pkg| pkg.get("name"))
-        .and_then(|name| name.as_str()) {
+        .and_then(|name| name.as_str())
+    {
         return Ok(package_name.replace('-', "_"));
     }
 
