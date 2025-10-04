@@ -1,5 +1,5 @@
 [package]
-name = "vampire"
+name = "vampire-build"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -10,8 +10,4 @@ categories.workspace = true
 edition = "2021"
 
 [dependencies]
-jni = { workspace = true }
-libc = "0.2"
-libloading = "0.8"
-inventory = "0.3"
-vampire-macro = { path = "../vampire-macro" }
+toml = { workspace = true }

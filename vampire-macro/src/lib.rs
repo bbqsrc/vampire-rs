@@ -70,7 +70,7 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
                 #[cfg(target_os = "android")]
                 fn #wrapper_fn_name() -> bool {
                     let result = std::panic::catch_unwind(|| {
-                        let runtime = tokio::runtime::Builder::new_current_thread()
+                        let runtime = tokio::runtime::Builder::new_multi_thread()
                             .enable_all()
                             .build()
                             .unwrap();
@@ -90,7 +90,7 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
                 #[cfg(target_os = "android")]
                 fn #wrapper_fn_name() -> bool {
                     let result = std::panic::catch_unwind(|| {
-                        let runtime = tokio::runtime::Builder::new_current_thread()
+                        let runtime = tokio::runtime::Builder::new_multi_thread()
                             .enable_all()
                             .build()
                             .unwrap();

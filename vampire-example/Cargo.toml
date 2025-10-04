@@ -2,6 +2,16 @@
 name = "vampire-example"
 version = "0.1.0"
 edition = "2021"
+publish = false
+
+[package.metadata.vampire]
+permissions = [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE"
+]
+
+[package.metadata.vampire.dependencies]
+"org.chromium.net:cronet-api" = "141.7340.3"
 
 [lib]
 crate-type = ["cdylib"]

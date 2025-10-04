@@ -1,9 +1,13 @@
 use clap::{Parser, Subcommand};
+use xmlem::NewElement;
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 mod android_sdk;
 mod host_templates;
+mod maven;
 
 // Vampire constants
 const HOST_PACKAGE: &str = "com.vampire.host";
@@ -41,11 +45,25 @@ enum Commands {
         /// Show test output (stdout/stderr from tests)
         #[arg(long)]
         nocapture: bool,
+        /// Show full logcat trace (all output until killed)
+        #[arg(long)]
+        trace: bool,
+        /// Additional logcat filters to include (can be specified multiple times)
+        /// Format: TAG:LEVEL (e.g. "chromium:D" or "MyTag:V")
+        #[arg(long = "logcat-filter", action = clap::ArgAction::Append)]
+        logcat_filters: Vec<String>,
+        /// Run only tests whose names contain this substring
+        #[arg(long)]
+        test: Option<String>,
     },
     /// Package APK with test artifacts
     Package,
     /// Clean build artifacts
     Clean,
+    /// Show resolved Maven dependencies (dry-run)
+    Deps,
+    /// Update Maven dependencies and regenerate lock file
+    Update,
 }
 
 fn get_library_name() -> Result<String, String> {
@@ -77,6 +95,184 @@ fn get_library_name() -> Result<String, String> {
     Err("Could not find library name in Cargo.toml".to_string())
 }
 
+fn get_android_permissions() -> Vec<String> {
+    let cargo_toml_path = "Cargo.toml";
+    let content = match fs::read_to_string(cargo_toml_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let cargo_toml: toml::Value = match toml::from_str(&content) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+
+    cargo_toml
+        .get("package")
+        .and_then(|pkg| pkg.get("metadata"))
+        .and_then(|meta| meta.get("vampire"))
+        .and_then(|vampire| vampire.get("permissions"))
+        .and_then(|perms| perms.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn get_maven_dependencies() -> Vec<String> {
+    let cargo_toml_path = "Cargo.toml";
+    let content = match fs::read_to_string(cargo_toml_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let cargo_toml: toml::Value = match toml::from_str(&content) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut coordinates = Vec::new();
+
+    if let Some(deps) = cargo_toml
+        .get("package")
+        .and_then(|pkg| pkg.get("metadata"))
+        .and_then(|meta| meta.get("vampire"))
+        .and_then(|vampire| vampire.get("dependencies"))
+        .and_then(|deps| deps.as_table())
+    {
+        for (coord, value) in deps {
+            // Support both string version and object with version field
+            let version = if let Some(version_str) = value.as_str() {
+                version_str.to_string()
+            } else if let Some(version_str) = value.get("version").and_then(|v| v.as_str()) {
+                version_str.to_string()
+            } else {
+                continue;
+            };
+
+            coordinates.push(format!("{}:{}", coord, version));
+        }
+    }
+
+    coordinates
+}
+
+fn get_android_resources() -> HashMap<String, toml::Table> {
+    let cargo_toml_path = "Cargo.toml";
+    let content = match fs::read_to_string(cargo_toml_path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+
+    let cargo_toml: toml::Value = match toml::from_str(&content) {
+        Ok(t) => t,
+        Err(_) => return HashMap::new(),
+    };
+
+    cargo_toml
+        .get("package")
+        .and_then(|pkg| pkg.get("metadata"))
+        .and_then(|meta| meta.get("vampire"))
+        .and_then(|vampire| vampire.get("res"))
+        .and_then(|res| res.get("values"))
+        .and_then(|values| values.as_table())
+        .map(|table| {
+            table.iter()
+                .filter_map(|(filename, value)| {
+                    value.as_table().map(|t| (filename.clone(), t.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+pub struct ManifestComponent {
+    pub name: String,
+    pub attributes: HashMap<String, String>,
+}
+
+#[derive(Debug, Default)]
+pub struct ManifestComponents {
+    pub services: Vec<ManifestComponent>,
+    pub receivers: Vec<ManifestComponent>,
+}
+
+fn get_manifest_components() -> ManifestComponents {
+    let cargo_toml_path = "Cargo.toml";
+    let content = match fs::read_to_string(cargo_toml_path) {
+        Ok(c) => c,
+        Err(_) => return ManifestComponents::default(),
+    };
+
+    let cargo_toml: toml::Value = match toml::from_str(&content) {
+        Ok(t) => t,
+        Err(_) => return ManifestComponents::default(),
+    };
+
+    let manifest_section = cargo_toml
+        .get("package")
+        .and_then(|pkg| pkg.get("metadata"))
+        .and_then(|meta| meta.get("vampire"))
+        .and_then(|vampire| vampire.get("manifest"));
+
+    let mut components = ManifestComponents::default();
+
+    if let Some(manifest) = manifest_section {
+        // Parse services
+        if let Some(services) = manifest.get("service").and_then(|s| s.as_array()) {
+            for service in services {
+                if let Some(table) = service.as_table() {
+                    if let Some(name) = table.get("name").and_then(|n| n.as_str()) {
+                        let mut attrs = HashMap::new();
+                        for (key, value) in table {
+                            if key != "name" {
+                                if let Some(s) = value.as_str() {
+                                    attrs.insert(key.clone(), s.to_string());
+                                } else if let Some(b) = value.as_bool() {
+                                    attrs.insert(key.clone(), b.to_string());
+                                }
+                            }
+                        }
+                        components.services.push(ManifestComponent {
+                            name: name.to_string(),
+                            attributes: attrs,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Parse receivers
+        if let Some(receivers) = manifest.get("receiver").and_then(|r| r.as_array()) {
+            for receiver in receivers {
+                if let Some(table) = receiver.as_table() {
+                    if let Some(name) = table.get("name").and_then(|n| n.as_str()) {
+                        let mut attrs = HashMap::new();
+                        for (key, value) in table {
+                            if key != "name" {
+                                if let Some(s) = value.as_str() {
+                                    attrs.insert(key.clone(), s.to_string());
+                                } else if let Some(b) = value.as_bool() {
+                                    attrs.insert(key.clone(), b.to_string());
+                                }
+                            }
+                        }
+                        components.receivers.push(ManifestComponent {
+                            name: name.to_string(),
+                            attributes: attrs,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    components
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -87,9 +283,19 @@ async fn main() {
             device,
             force,
             nocapture,
-        } => run_tests(device, force, nocapture).await,
-        Commands::Package => package_apk().await,
+            trace,
+            logcat_filters,
+            test,
+        } => run_tests(device, force, nocapture, trace, logcat_filters, test).await,
+        Commands::Package => {
+            if let Err(e) = package_apk().await {
+                eprintln!("❌ Failed to package APK: {}", e);
+                std::process::exit(1);
+            }
+        }
         Commands::Clean => clean_project().await,
+        Commands::Deps => show_dependencies().await,
+        Commands::Update => update_dependencies().await,
     }
 }
 
@@ -121,16 +327,7 @@ async fn build_project(lib_only: bool) {
     // Build for Android target
     println!("📱 Building for {}", NDK_TARGET);
 
-    // Get library name to make it available as extern
-    let lib_name = match get_library_name() {
-        Ok(name) => name,
-        Err(e) => {
-            eprintln!("❌ {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    let rustflags = format!("--cfg vampire --extern {}", lib_name);
+    let rustflags = format!("--cfg vampire");
 
     let android_build = tokio::process::Command::new("cargo")
         .env("RUSTFLAGS", &rustflags)
@@ -161,35 +358,96 @@ async fn build_project(lib_only: bool) {
     }
 
     // Build APK and package everything
-    package_apk().await;
+    if let Err(e) = package_apk().await {
+        eprintln!("❌ Failed to package APK: {}", e);
+        std::process::exit(1);
+    }
 }
 
-async fn package_apk() {
+async fn package_apk() -> Result<(), Box<dyn std::error::Error>> {
     println!("📦 Packaging APK...");
 
     // Find Android SDK
-    let sdk = match android_sdk::AndroidSdk::find() {
-        Ok(sdk) => {
-            println!("📱 Using Android SDK: {}", sdk.sdk_path.display());
-            sdk
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to find Android SDK: {}", e);
-            eprintln!("💡 Set ANDROID_SDK_ROOT environment variable");
-            return;
-        }
-    };
+    let sdk = android_sdk::AndroidSdk::find().map_err(|e| {
+        eprintln!("❌ Failed to find Android SDK: {}", e);
+        eprintln!("💡 Set ANDROID_SDK_ROOT environment variable");
+        e
+    })?;
+
+    println!("📱 Using Android SDK: {}", sdk.sdk_path.display());
 
     let vampire_output = Path::new(&OUTPUT_DIR);
     let api_level = TARGET_SDK;
 
     // Build host APK
-    if let Err(e) = build_host_apk(&sdk, vampire_output, api_level).await {
-        eprintln!("❌ Failed to build host APK: {}", e);
-        return;
-    }
+    build_host_apk(&sdk, vampire_output, api_level).await?;
 
     println!("✅ APK packaged successfully!");
+    Ok(())
+}
+
+fn merge_manifests(
+    host_manifest: &Path,
+    aar_manifests: &[PathBuf],
+    output_manifest: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let host_content = std::fs::read_to_string(host_manifest)?;
+    let mut host_doc = xmlem::Document::from_str(&host_content)?;
+
+    let host_package = host_doc.root()
+        .attribute(&host_doc, "package")
+        .ok_or("Host manifest missing package attribute")?
+        .to_string();
+
+    // Ensure xmlns:tools namespace is present
+    if host_doc.root().attribute(&host_doc, "xmlns:tools").is_none() {
+        host_doc.root().set_attribute(&mut host_doc, "xmlns:tools", "http://schemas.android.com/tools");
+    }
+
+    let mut app_element = None;
+    let manifest_element = host_doc.root();
+
+    for child in manifest_element.children(&host_doc) {
+        if child.name(&host_doc) == "application" {
+            app_element = Some(child);
+            break;
+        }
+    }
+
+    let app_elem = app_element.ok_or("Host manifest missing <application> element")?;
+
+    for aar_manifest_path in aar_manifests {
+        let aar_content = std::fs::read_to_string(aar_manifest_path)?;
+        let aar_doc = xmlem::Document::from_str(&aar_content)?;
+
+        for child in aar_doc.root().children(&aar_doc) {
+            if child.name(&aar_doc) == "application" {
+                for aar_app_child in child.children(&aar_doc) {
+                    let elem_name = aar_app_child.name(&aar_doc);
+                    if matches!(elem_name, "service" | "receiver" | "provider" | "activity" | "meta-data") {
+                        eprintln!("  Merging {} from {}", elem_name, aar_manifest_path.display());
+                        let new = NewElement { name: aar_app_child.name(&aar_doc).parse().unwrap(), attrs: aar_app_child.attributes(&aar_doc).clone() };
+                        app_elem.append_new_element(&mut host_doc, new);
+                        // app_elem.append_new_element(document, new_element)
+                    }
+                }
+            }
+        }
+
+        for child in aar_doc.root().children(&aar_doc) {
+            if child.name(&aar_doc) == "uses-permission" {
+                eprintln!("  Merging uses-permission from {}", aar_manifest_path.display());
+                let new = NewElement { name: child.name(&aar_doc).parse().unwrap(), attrs: child.attributes(&aar_doc).clone() };
+                manifest_element.append_new_element(&mut host_doc, new);
+            }
+        }
+    }
+
+    let merged_content = host_doc.to_string_pretty().replace("${applicationId}", &host_package);
+    std::fs::write(output_manifest, merged_content)?;
+    eprintln!("  Wrote merged manifest to: {}", output_manifest.display());
+
+    Ok(())
 }
 
 async fn build_host_apk(
@@ -200,27 +458,132 @@ async fn build_host_apk(
     println!("🏗️  Building host APK...");
 
     let build_dir = output_dir.join("host-build");
-    std::fs::create_dir_all(&build_dir)?;
+    std::fs::create_dir_all(&build_dir)
+        .map_err(|e| format!("Failed to create build directory {}: {}", build_dir.display(), e))?;
+
+    // Get Android permissions from Cargo.toml
+    let permissions = get_android_permissions();
+    if !permissions.is_empty() {
+        println!("📱 Adding {} permission(s) to manifest", permissions.len());
+        for perm in &permissions {
+            println!("   - {}", perm);
+        }
+    }
+
+    // Resolve Maven dependencies
+    let maven_deps = get_maven_dependencies();
+    let resolved_artifacts = if !maven_deps.is_empty() {
+        println!("📦 Resolving {} Maven dependencies...", maven_deps.len());
+        let cache_dir = output_dir.join("maven-cache");
+        let lock_file = std::path::Path::new("vampire.lock").to_path_buf();
+        let resolver = maven::MavenResolver::new(cache_dir)?.with_lock_file(lock_file);
+        let mut artifacts = resolver.resolve(&maven_deps).await?;
+        artifacts.sort();
+        println!("✅ Resolved {} artifact(s)", artifacts.len());
+
+        let mut total_native_libs = 0;
+        for artifact in &artifacts {
+            println!("   - {}:{}:{}",
+                artifact.coordinate.group_id,
+                artifact.coordinate.artifact_id,
+                artifact.coordinate.version
+            );
+            if !artifact.native_libs.is_empty() {
+                total_native_libs += artifact.native_libs.len();
+                eprintln!("     └─ {} native libraries", artifact.native_libs.len());
+            }
+        }
+
+        if total_native_libs > 0 {
+            println!("📚 Found {} native libraries across all artifacts", total_native_libs);
+        }
+
+        artifacts
+    } else {
+        Vec::new()
+    };
 
     // Write embedded host template files
-    host_templates::write_host_files(&build_dir)?;
+    let resources = get_android_resources();
+    let components = get_manifest_components();
+    host_templates::write_host_files(&build_dir, &permissions, &resources, &components)?;
 
-    std::fs::create_dir_all(build_dir.join("gen"))?;
-    std::fs::create_dir_all(build_dir.join("obj"))?;
+    let gen_dir = build_dir.join("gen");
+    let obj_dir = build_dir.join("obj");
+    let libs_dir = build_dir.join("libs");
+
+    std::fs::create_dir_all(&gen_dir)
+        .map_err(|e| format!("Failed to create gen directory {}: {}", gen_dir.display(), e))?;
+    std::fs::create_dir_all(&obj_dir)
+        .map_err(|e| format!("Failed to create obj directory {}: {}", obj_dir.display(), e))?;
+    std::fs::create_dir_all(&libs_dir)
+        .map_err(|e| format!("Failed to create libs directory {}: {}", libs_dir.display(), e))?;
 
     let manifest = build_dir.join("AndroidManifest.xml");
     let res_dir = build_dir.join("res");
     let java_dir = build_dir.join("java");
 
-    // Step 1: Generate R.java
-    sdk.generate_r_java(&manifest, &res_dir, &build_dir.join("gen"), api_level)
-        .await?;
+    // Step 2.5: Build AAR resources as shared libraries (per BUILD.md)
+    println!("🎨 Building AAR resources...");
 
-    // Step 2: Compile Java sources
-    let r_java = build_dir
-        .join("gen")
-        .join("com/vampire/host")
-        .join("R.java");
+    // Create shared ids.txt for stable resource IDs across all AARs and host app
+    let shared_ids_txt = build_dir.join("ids.txt");
+    std::fs::write(&shared_ids_txt, "")?;
+    let shared_ids_txt = std::fs::canonicalize(&shared_ids_txt)?;  // Make absolute for aapt2
+
+    let mut aar_flat_files = Vec::new();     // For APK resource merging
+    let mut aar_packages = Vec::new();       // Package names for --extra-packages
+    let mut aar_manifests = Vec::new();      // Manifest paths for merging
+
+    for artifact in &resolved_artifacts {
+        if artifact.is_aar && artifact.res_dir.is_some() && artifact.manifest_path.is_some() {
+            // AAR root is where AndroidManifest.xml and res/ live
+            let aar_root = artifact.jar_path.parent().unwrap();
+
+            // Clean build directory
+            let aar_build_dir = aar_root.join("build");
+            if aar_build_dir.exists() {
+                std::fs::remove_dir_all(&aar_build_dir)?;
+            }
+
+            println!("  Compiling {} resources...", artifact.coordinate);
+            let flat_files = sdk.compile_aar_resources(aar_root).await?;
+
+            aar_flat_files.extend(flat_files);
+
+            // Collect package name if available
+            if let Some(package_name) = &artifact.package_name {
+                aar_packages.push(package_name.clone());
+            }
+
+            // Collect manifest for merging
+            if let Some(manifest_path) = &artifact.manifest_path {
+                aar_manifests.push(manifest_path.clone());
+            }
+        }
+    }
+
+    println!("Compiled {} AAR resource libraries with {} total .flat files",
+             aar_packages.len(), aar_flat_files.len());
+
+    // Step 2.6: Merge AAR manifests into host manifest
+    println!("📝 Merging AAR manifests...");
+    let merged_manifest = build_dir.join("AndroidManifest-merged.xml");
+    merge_manifests(&manifest, &aar_manifests, &merged_manifest)?;
+
+    // Step 2.7: Build host app resources (merge with AAR resources)
+    println!("🎨 Generating host R.java...");
+    let r_java_gen_dir = build_dir.join("gen");
+    std::fs::create_dir_all(&r_java_gen_dir)?;
+
+    sdk.generate_r_java_v2(&merged_manifest, &res_dir, &aar_flat_files, &aar_packages, &shared_ids_txt, &r_java_gen_dir, api_level).await?;
+
+    // Collect ALL R.java files (host + AARs) generated by --extra-packages
+    let mut all_r_java_files = Vec::new();
+    sdk.find_r_java_files(&r_java_gen_dir, &mut all_r_java_files)?;
+
+    eprintln!("Found {} R.java files to compile", all_r_java_files.len());
+
     let instrumentation_java = java_dir
         .join("com/vampire/host")
         .join("VampireInstrumentation.java");
@@ -229,29 +592,63 @@ async fn build_host_apk(
         .join("com/vampire/loader")
         .join("TestMetadata.java");
 
+    let classpath: Vec<&Path> = resolved_artifacts.iter()
+        .map(|a| a.jar_path.as_path())
+        .collect();
+
+    // Compile all R.java files + host Java files
+    let mut java_files_to_compile: Vec<&Path> = all_r_java_files.iter().map(|p| p.as_path()).collect();
+    java_files_to_compile.push(&instrumentation_java);
+    java_files_to_compile.push(&test_runner_java);
+    java_files_to_compile.push(&test_metadata_java);
+
     sdk.compile_java(
-        &[
-            &r_java,
-            &instrumentation_java,
-            &test_runner_java,
-            &test_metadata_java,
-        ],
+        &java_files_to_compile,
         &sdk.sdk_path
             .join("platforms")
             .join(format!("android-{}", api_level))
             .join("android.jar"),
+        &classpath,
         &build_dir.join("obj"),
     )
     .await?;
 
-    // Step 3: Convert to DEX
+    // Step 3: Convert to DEX (obj contains all R.class files now)
     let classes_dex = build_dir.join("classes.dex");
-    sdk.convert_to_dex(&build_dir.join("obj"), &classes_dex)
+    let obj_dir = build_dir.join("obj");
+
+    // DEX inputs: just Maven JARs (R.class files are in obj/ now)
+    let dex_inputs: Vec<&Path> = classpath.clone();
+
+    eprintln!("DEBUG: Converting to DEX with {} JAR inputs", dex_inputs.len());
+    eprintln!("DEBUG:   obj dir: {} (contains all R.class files)", obj_dir.display());
+
+    sdk.convert_to_dex(&[&obj_dir], &dex_inputs, &classes_dex, api_level)
         .await?;
 
-    // Step 4: Package APK
+    // Step 3.5: Organize native libraries by architecture
+    let libs_dir = build_dir.join("lib");
+
+    // Copy Maven dependency native libraries
+    for artifact in &resolved_artifacts {
+        for (arch, lib_path) in &artifact.native_libs {
+            let target_dir = libs_dir.join(arch);
+            std::fs::create_dir_all(&target_dir)
+                .map_err(|e| format!("Failed to create lib/{} directory {}: {}", arch, target_dir.display(), e))?;
+
+            let lib_name = lib_path.file_name().ok_or("Invalid library path")?;
+            let target_path = target_dir.join(lib_name);
+
+            std::fs::copy(lib_path, &target_path)
+                .map_err(|e| format!("Failed to copy {} to {}: {}", lib_path.display(), target_path.display(), e))?;
+
+            eprintln!("Copied Maven native library: {} -> {}", lib_path.display(), target_path.display());
+        }
+    }
+
+    // Step 4: Package APK with aapt2 (merges host + AAR resources)
     let unsigned_apk = build_dir.join(format!("{}-unsigned.apk", APK_NAME));
-    sdk.package_apk(&manifest, &res_dir, &classes_dex, &unsigned_apk, api_level)
+    sdk.package_apk_v2(&merged_manifest, &res_dir, &aar_flat_files, &aar_packages, &shared_ids_txt, &classes_dex, &libs_dir, &unsigned_apk, api_level)
         .await?;
 
     // Step 5: Align APK (must be done before signing with apksigner)
@@ -275,13 +672,14 @@ async fn build_host_apk(
 
     // Copy to output directory
     let final_apk = output_dir.join(format!("{}.apk", APK_NAME));
-    std::fs::copy(&signed_apk, &final_apk)?;
+    std::fs::copy(&signed_apk, &final_apk)
+        .map_err(|e| format!("Failed to copy {} to {}: {}", signed_apk.display(), final_apk.display(), e))?;
 
     println!("✅ Host APK created: {}", final_apk.display());
     Ok(())
 }
 
-async fn run_tests(device: Option<String>, force: bool, nocapture: bool) {
+async fn run_tests(device: Option<String>, force: bool, nocapture: bool, trace: bool, logcat_filters: Vec<String>, test_filter: Option<String>) {
     println!("🧪 Running tests...");
 
     // Find Android SDK for adb
@@ -457,7 +855,7 @@ async fn run_tests(device: Option<String>, force: bool, nocapture: bool) {
         .run_adb(&rm_args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
         .await;
 
-    // Step 5: Run instrumentation tests with paths in app directory
+    // Step 5: Run instrumentation tests
     println!("🧪 Running instrumentation tests...");
 
     // Clear logcat before running tests
@@ -477,12 +875,28 @@ async fn run_tests(device: Option<String>, force: bool, nocapture: bool) {
         logcat_cmd.args(&["-s", device_id]);
     }
 
-    // With nocapture: show all TestRunner logs (I, D, E)
-    // Without nocapture: show only Info level (test results)
-    if nocapture {
-        logcat_cmd.args(&["logcat", "-v", "threadtime", "-s", "TestRunner:*"]);
+    // Build logcat filters: start with base filters, then add user-specified ones
+    let mut filters: Vec<String> = if trace {
+        vec![]  // No filtering with --trace
+    } else if nocapture {
+        vec!["TestRunner:*".to_string(), "*:F".to_string()]
     } else {
-        logcat_cmd.args(&["logcat", "-v", "threadtime", "-s", "TestRunner:I"]);
+        vec!["TestRunner:I".to_string(), "*:F".to_string()]
+    };
+
+    // Add user-specified filters additively (ignored if --trace is set)
+    if !trace {
+        filters.extend(logcat_filters.iter().cloned());
+    }
+
+    // Build logcat command
+    if filters.is_empty() {
+        logcat_cmd.args(&["logcat", "-v", "threadtime"]);
+    } else {
+        logcat_cmd.args(&["logcat", "-v", "threadtime", "-s"]);
+        for filter in &filters {
+            logcat_cmd.arg(filter);
+        }
     }
 
     logcat_cmd.stdout(std::process::Stdio::piped());
@@ -494,6 +908,7 @@ async fn run_tests(device: Option<String>, force: bool, nocapture: bool) {
     let logcat_handle = if let Some(ref mut child) = child {
         if let Some(stdout) = child.stdout.take() {
             let nocapture_flag = nocapture;
+            let trace_flag = trace;
             Some(tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let reader = BufReader::new(stdout);
@@ -505,24 +920,33 @@ async fn run_tests(device: Option<String>, force: bool, nocapture: bool) {
                         continue;
                     }
 
-                    // threadtime format: MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: message
-                    // Extract priority level and message
-                    if let Some(message_start) = line.find(": ") {
-                        let message = &line[message_start + 2..];
+                    if trace_flag {
+                        // Trace mode: print everything without filtering
+                        println!("{}", line);
+                    } else {
+                        // threadtime format: MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: message
+                        // Extract priority level and message
+                        if let Some(message_start) = line.find(": ") {
+                            let message = &line[message_start + 2..];
 
-                        // Find priority level (I, D, E, W, etc.) - it's before the tag
-                        let is_info = line.contains(" I ") || line.contains(" I/");
-                        let is_error = line.contains(" E ") || line.contains(" E/");
+                            // Find priority level (I, D, E, W, F, etc.) - it's before the tag
+                            let is_info = line.contains(" I ") || line.contains(" I/");
+                            let is_error = line.contains(" E ") || line.contains(" E/");
+                            let is_fatal = line.contains(" F ") || line.contains(" F/");
 
-                        if is_info {
-                            // Info level: just print the message (test results)
-                            println!("{}", message);
-                        } else if nocapture_flag {
-                            // Debug/Error level with --nocapture: add prefix
-                            if is_error {
-                                println!("\x1b[31merr:\x1b[0m {}", message);
-                            } else {
-                                println!("\x1b[90mout:\x1b[0m {}", message);
+                            if is_fatal {
+                                // Fatal errors: always print to stderr
+                                eprintln!("\x1b[31mFATAL:\x1b[0m {}", message);
+                            } else if is_info {
+                                // Info level: just print the message (test results)
+                                println!("{}", message);
+                            } else if nocapture_flag {
+                                // Debug/Error level with --nocapture: add prefix
+                                if is_error {
+                                    println!("\x1b[31merr:\x1b[0m {}", message);
+                                } else {
+                                    println!("\x1b[90mout:\x1b[0m {}", message);
+                                }
                             }
                         }
                     }
@@ -545,8 +969,18 @@ async fn run_tests(device: Option<String>, force: bool, nocapture: bool) {
         "-e".to_string(),
         "lib_path".to_string(),
         format!("{}/{}", app_files_dir, lib_filename),
-        format!("{}/.{}", HOST_PACKAGE, INSTRUMENTATION_CLASS),
     ]);
+
+    // Add test filter if specified
+    if let Some(filter) = &test_filter {
+        test_args.extend_from_slice(&[
+            "-e".to_string(),
+            "test_filter".to_string(),
+            filter.clone(),
+        ]);
+    }
+
+    test_args.push(format!("{}/.{}", HOST_PACKAGE, INSTRUMENTATION_CLASS));
 
     match sdk
         .run_adb(&test_args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
@@ -636,4 +1070,101 @@ async fn clean_project() {
     }
 
     println!("✅ Project cleaned!");
+}
+
+async fn show_dependencies() {
+    println!("📦 Resolving Maven dependencies (dry-run)...\n");
+
+    // Get Maven dependencies from Cargo.toml
+    let maven_deps = get_maven_dependencies();
+
+    if maven_deps.is_empty() {
+        println!("No Maven dependencies configured in Cargo.toml");
+        println!("\nAdd dependencies in [package.metadata.vampire.dependencies]:");
+        println!("  \"org.chromium.net:cronet-api\" = \"119.6045.31\"");
+        return;
+    }
+
+    // Create resolver
+    let cache_dir = std::path::Path::new(OUTPUT_DIR).join("maven-cache");
+    let lock_file = std::path::Path::new("vampire.lock").to_path_buf();
+    let resolver = match maven::MavenResolver::new(cache_dir) {
+        Ok(r) => r.with_lock_file(lock_file),
+        Err(e) => {
+            eprintln!("❌ Failed to create Maven resolver: {}", e);
+            return;
+        }
+    };
+
+    // Check if lock file exists
+    if let Ok(Some(lock)) = resolver.read_lock() {
+        println!("📄 Lock file status:");
+        println!("   Version: {}", lock.version);
+        println!("   Generated: {}", lock.metadata.generated_at);
+        println!("   Artifacts: {}\n", lock.artifacts.len());
+    }
+
+    // Resolve dependencies (dry-run - only downloads POMs)
+    let nodes = match resolver.resolve_dependencies_dry_run(&maven_deps).await {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("❌ Failed to resolve dependencies: {}", e);
+            return;
+        }
+    };
+
+    // Print dependency tree
+    resolver.print_dependency_tree(&nodes);
+
+    // Detect potential conflicts (just warnings, no auto-fix)
+    resolver.detect_conflicts(&nodes);
+
+    // Display summary
+    println!("\n✅ Resolved {} artifact(s)", nodes.len());
+    for node in &nodes {
+        println!("   - {}", node.coordinate);
+    }
+}
+
+async fn update_dependencies() {
+    println!("🔄 Updating Maven dependencies...\n");
+
+    // Get Maven dependencies from Cargo.toml
+    let maven_deps = get_maven_dependencies();
+
+    if maven_deps.is_empty() {
+        println!("No Maven dependencies configured in Cargo.toml");
+        println!("\nAdd dependencies in [package.metadata.vampire.dependencies]:");
+        println!("  \"org.chromium.net:cronet-api\" = \"119.6045.31\"");
+        return;
+    }
+
+    // Create resolver with lock file
+    let cache_dir = std::path::Path::new(OUTPUT_DIR).join("maven-cache");
+    let lock_file = std::path::Path::new("vampire.lock").to_path_buf();
+    let resolver = match maven::MavenResolver::new(cache_dir) {
+        Ok(r) => r.with_lock_file(lock_file),
+        Err(e) => {
+            eprintln!("❌ Failed to create Maven resolver: {}", e);
+            return;
+        }
+    };
+
+    // Force update (ignore existing lock file)
+    let artifacts = match resolver.resolve_with_lock(&maven_deps, true).await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("❌ Failed to update dependencies: {}", e);
+            return;
+        }
+    };
+
+    println!("\n✅ Updated {} artifact(s)", artifacts.len());
+    for artifact in &artifacts {
+        println!("   - {}:{}:{}",
+            artifact.coordinate.group_id,
+            artifact.coordinate.artifact_id,
+            artifact.coordinate.version
+        );
+    }
 }

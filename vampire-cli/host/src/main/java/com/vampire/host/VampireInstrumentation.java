@@ -23,11 +23,17 @@ public class VampireInstrumentation extends Instrumentation {
                 throw new IllegalArgumentException("Missing lib_path argument");
             }
 
+            // Get optional test filter
+            String testFilter = arguments.getString("test_filter");
+
             Log.d(TAG, "Library path: " + libPath);
+            if (testFilter != null) {
+                Log.d(TAG, "Test filter: " + testFilter);
+            }
 
             // Create TestRunner and run tests
             TestRunner testRunner = new TestRunner();
-            Bundle results = testRunner.runTests(libPath);
+            Bundle results = testRunner.runTests(libPath, testFilter);
 
             Log.d(TAG, "Tests completed successfully");
             finish(Activity.RESULT_OK, results);

@@ -11,9 +11,8 @@ pub use inventory;
 // Re-export the test macro
 pub use vampire_macro::test;
 
-use std::ffi::CString;
+use std::ffi::{c_void, CString};
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 
 /// Metadata about a test function
@@ -166,27 +165,67 @@ pub fn log_error(tag: &str, message: &str) {
 }
 
 // Global JavaVM pointer for async runtime access
-static GLOBAL_VM: AtomicPtr<JavaVM> = AtomicPtr::new(null_mut());
+static mut GLOBAL_VM: *mut c_void = null_mut();
 
 #[no_mangle]
 pub extern "system" fn JNI_OnLoad(
     vm: *mut JavaVM,
     _reserved: *mut std::ffi::c_void,
 ) -> jni::sys::jint {
-    GLOBAL_VM.store(vm, Ordering::Release);
+    unsafe { GLOBAL_VM = vm as *mut c_void };
 
+    #[cfg(target_os = "android")]
     redirect_stdout_to_logcat();
 
     jni::sys::JNI_VERSION_1_6
 }
 
-/// Get the JavaVM pointer stored during JNI_OnLoad
-pub fn get_java_vm() -> Option<*mut JavaVM> {
-    let vm_ptr = GLOBAL_VM.load(Ordering::Acquire);
-    if vm_ptr.is_null() {
-        None
+pub unsafe fn java_vm() -> *mut c_void {
+    GLOBAL_VM
+}
+
+/// Check if a Java exception is pending and log it to stderr
+/// Returns the exception message if one was pending
+pub fn check_and_log_exception(env: &mut JNIEnv) -> Option<String> {
+    if env.exception_check().unwrap_or(false) {
+        // Print the exception to stderr (includes stack trace)
+        let _ = env.exception_describe();
+
+        // Try to get the exception message
+        let exception = env.exception_occurred().ok()?;
+        let _ = env.exception_clear();
+
+        // Get exception message
+        let message = env.call_method(&exception, "getMessage", "()Ljava/lang/String;", &[])
+            .ok()
+            .and_then(|v| v.l().ok())
+            .and_then(|obj| {
+                let jstr: jni::objects::JString = obj.into();
+                env.get_string(&jstr).ok().map(|s| s.into())
+            });
+
+        // Get exception class name
+        let class = env.get_object_class(&exception).ok()?;
+        let class_name = env.call_method(&class, "getName", "()Ljava/lang/String;", &[])
+            .ok()
+            .and_then(|v| v.l().ok())
+            .and_then(|obj| {
+                let jstr: jni::objects::JString = obj.into();
+                env.get_string(&jstr).ok().map(|s| s.into())
+            });
+
+        let full_message = match (class_name, message) {
+            (Some(cls), Some(msg)) => format!("{}: {}", cls, msg),
+            (Some(cls), None) => cls,
+            (None, Some(msg)) => msg,
+            (None, None) => "Unknown Java exception".to_string(),
+        };
+
+        log_error("JNI", &format!("Java exception: {}", full_message));
+
+        Some(full_message)
     } else {
-        Some(vm_ptr)
+        None
     }
 }
 
@@ -195,17 +234,24 @@ pub fn with_jni_env<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut JNIEnv) -> R,
 {
-    let vm_ptr = get_java_vm()?;
-
     unsafe {
-        let vm = jni::JavaVM::from_raw(vm_ptr).ok()?;
+        let vm = jni::JavaVM::from_raw(GLOBAL_VM as *mut JavaVM).ok()?;
         let mut env = vm.attach_current_thread().ok()?;
-        Some(f(&mut env))
+        let result = f(&mut env);
+
+        // Check for pending exceptions before returning
+        if let Some(exc_msg) = check_and_log_exception(&mut env) {
+            log_error("TestRunner", &format!("Exception in with_jni_env: {}", exc_msg));
+            return None;
+        }
+
+        Some(result)
     }
 }
 
 /// Redirect stdout and stderr to Android logcat
 /// This allows println! and eprintln! to show up in logcat
+#[cfg(target_os = "android")]
 pub fn redirect_stdout_to_logcat() {
     use std::io::{BufRead, BufReader};
     use std::os::unix::io::FromRawFd;

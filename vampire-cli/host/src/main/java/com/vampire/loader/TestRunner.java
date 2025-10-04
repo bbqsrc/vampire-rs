@@ -9,7 +9,7 @@ public class TestRunner {
     // Native method to get test manifest from Rust
     private static native TestMetadata[] getTestManifest();
 
-    public Bundle runTests(String libPath) {
+    public Bundle runTests(String libPath, String testFilter) {
         Bundle results = new Bundle();
 
         try {
@@ -19,14 +19,25 @@ public class TestRunner {
 
             // Get the test manifest from Rust
             TestMetadata[] manifest = getTestManifest();
-            int totalTests = manifest.length;
+            int totalTests = 0;
             int passedTests = 0;
 
-            Log.i(TAG, "Running " + totalTests + " tests");
+            if (testFilter != null) {
+                Log.i(TAG, "Running tests matching filter: " + testFilter);
+            } else {
+                Log.i(TAG, "Running all tests");
+            }
 
             // Run each test
             for (TestMetadata test : manifest) {
                 String testName = test.getName();
+
+                // Apply test filter if specified
+                if (testFilter != null && !testName.contains(testFilter)) {
+                    continue;  // Skip tests that don't match the filter
+                }
+
+                totalTests++;
                 boolean isAsync = test.isAsync();
                 boolean shouldPanic = test.shouldPanic();
 

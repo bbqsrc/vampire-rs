@@ -22,3 +22,9 @@ glob = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 pathos = "0.3"
+xmlem = "0.3.3"
+zip = "5.1.1"
+frakt = { git = "https://github.com/bbqsrc/frakt" }
+blake3 = "1.5"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
