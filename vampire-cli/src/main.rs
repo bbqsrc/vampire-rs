@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
-use xmlem::NewElement;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use xmlem::NewElement;
 
 mod android_sdk;
 mod host_templates;
@@ -179,7 +179,8 @@ fn get_android_resources() -> HashMap<String, toml::Table> {
         .and_then(|res| res.get("values"))
         .and_then(|values| values.as_table())
         .map(|table| {
-            table.iter()
+            table
+                .iter()
                 .filter_map(|(filename, value)| {
                     value.as_table().map(|t| (filename.clone(), t.clone()))
                 })
@@ -394,14 +395,23 @@ fn merge_manifests(
     let host_content = std::fs::read_to_string(host_manifest)?;
     let mut host_doc = xmlem::Document::from_str(&host_content)?;
 
-    let host_package = host_doc.root()
+    let host_package = host_doc
+        .root()
         .attribute(&host_doc, "package")
         .ok_or("Host manifest missing package attribute")?
         .to_string();
 
     // Ensure xmlns:tools namespace is present
-    if host_doc.root().attribute(&host_doc, "xmlns:tools").is_none() {
-        host_doc.root().set_attribute(&mut host_doc, "xmlns:tools", "http://schemas.android.com/tools");
+    if host_doc
+        .root()
+        .attribute(&host_doc, "xmlns:tools")
+        .is_none()
+    {
+        host_doc.root().set_attribute(
+            &mut host_doc,
+            "xmlns:tools",
+            "http://schemas.android.com/tools",
+        );
     }
 
     let mut app_element = None;
@@ -424,9 +434,19 @@ fn merge_manifests(
             if child.name(&aar_doc) == "application" {
                 for aar_app_child in child.children(&aar_doc) {
                     let elem_name = aar_app_child.name(&aar_doc);
-                    if matches!(elem_name, "service" | "receiver" | "provider" | "activity" | "meta-data") {
-                        eprintln!("  Merging {} from {}", elem_name, aar_manifest_path.display());
-                        let new = NewElement { name: aar_app_child.name(&aar_doc).parse().unwrap(), attrs: aar_app_child.attributes(&aar_doc).clone() };
+                    if matches!(
+                        elem_name,
+                        "service" | "receiver" | "provider" | "activity" | "meta-data"
+                    ) {
+                        eprintln!(
+                            "  Merging {} from {}",
+                            elem_name,
+                            aar_manifest_path.display()
+                        );
+                        let new = NewElement {
+                            name: aar_app_child.name(&aar_doc).parse().unwrap(),
+                            attrs: aar_app_child.attributes(&aar_doc).clone(),
+                        };
                         app_elem.append_new_element(&mut host_doc, new);
                         // app_elem.append_new_element(document, new_element)
                     }
@@ -436,14 +456,22 @@ fn merge_manifests(
 
         for child in aar_doc.root().children(&aar_doc) {
             if child.name(&aar_doc) == "uses-permission" {
-                eprintln!("  Merging uses-permission from {}", aar_manifest_path.display());
-                let new = NewElement { name: child.name(&aar_doc).parse().unwrap(), attrs: child.attributes(&aar_doc).clone() };
+                eprintln!(
+                    "  Merging uses-permission from {}",
+                    aar_manifest_path.display()
+                );
+                let new = NewElement {
+                    name: child.name(&aar_doc).parse().unwrap(),
+                    attrs: child.attributes(&aar_doc).clone(),
+                };
                 manifest_element.append_new_element(&mut host_doc, new);
             }
         }
     }
 
-    let merged_content = host_doc.to_string_pretty().replace("${applicationId}", &host_package);
+    let merged_content = host_doc
+        .to_string_pretty()
+        .replace("${applicationId}", &host_package);
     std::fs::write(output_manifest, merged_content)?;
     eprintln!("  Wrote merged manifest to: {}", output_manifest.display());
 
@@ -458,8 +486,13 @@ async fn build_host_apk(
     println!("🏗️  Building host APK...");
 
     let build_dir = output_dir.join("host-build");
-    std::fs::create_dir_all(&build_dir)
-        .map_err(|e| format!("Failed to create build directory {}: {}", build_dir.display(), e))?;
+    std::fs::create_dir_all(&build_dir).map_err(|e| {
+        format!(
+            "Failed to create build directory {}: {}",
+            build_dir.display(),
+            e
+        )
+    })?;
 
     // Get Android permissions from Cargo.toml
     let permissions = get_android_permissions();
@@ -483,7 +516,8 @@ async fn build_host_apk(
 
         let mut total_native_libs = 0;
         for artifact in &artifacts {
-            println!("   - {}:{}:{}",
+            println!(
+                "   - {}:{}:{}",
                 artifact.coordinate.group_id,
                 artifact.coordinate.artifact_id,
                 artifact.coordinate.version
@@ -495,7 +529,10 @@ async fn build_host_apk(
         }
 
         if total_native_libs > 0 {
-            println!("📚 Found {} native libraries across all artifacts", total_native_libs);
+            println!(
+                "📚 Found {} native libraries across all artifacts",
+                total_native_libs
+            );
         }
 
         artifacts
@@ -512,12 +549,27 @@ async fn build_host_apk(
     let obj_dir = build_dir.join("obj");
     let libs_dir = build_dir.join("libs");
 
-    std::fs::create_dir_all(&gen_dir)
-        .map_err(|e| format!("Failed to create gen directory {}: {}", gen_dir.display(), e))?;
-    std::fs::create_dir_all(&obj_dir)
-        .map_err(|e| format!("Failed to create obj directory {}: {}", obj_dir.display(), e))?;
-    std::fs::create_dir_all(&libs_dir)
-        .map_err(|e| format!("Failed to create libs directory {}: {}", libs_dir.display(), e))?;
+    std::fs::create_dir_all(&gen_dir).map_err(|e| {
+        format!(
+            "Failed to create gen directory {}: {}",
+            gen_dir.display(),
+            e
+        )
+    })?;
+    std::fs::create_dir_all(&obj_dir).map_err(|e| {
+        format!(
+            "Failed to create obj directory {}: {}",
+            obj_dir.display(),
+            e
+        )
+    })?;
+    std::fs::create_dir_all(&libs_dir).map_err(|e| {
+        format!(
+            "Failed to create libs directory {}: {}",
+            libs_dir.display(),
+            e
+        )
+    })?;
 
     let manifest = build_dir.join("AndroidManifest.xml");
     let res_dir = build_dir.join("res");
@@ -529,11 +581,11 @@ async fn build_host_apk(
     // Create shared ids.txt for stable resource IDs across all AARs and host app
     let shared_ids_txt = build_dir.join("ids.txt");
     std::fs::write(&shared_ids_txt, "")?;
-    let shared_ids_txt = std::fs::canonicalize(&shared_ids_txt)?;  // Make absolute for aapt2
+    let shared_ids_txt = std::fs::canonicalize(&shared_ids_txt)?; // Make absolute for aapt2
 
-    let mut aar_flat_files = Vec::new();     // For APK resource merging
-    let mut aar_packages = Vec::new();       // Package names for --extra-packages
-    let mut aar_manifests = Vec::new();      // Manifest paths for merging
+    let mut aar_flat_files = Vec::new(); // For APK resource merging
+    let mut aar_packages = Vec::new(); // Package names for --extra-packages
+    let mut aar_manifests = Vec::new(); // Manifest paths for merging
 
     for artifact in &resolved_artifacts {
         if artifact.is_aar && artifact.res_dir.is_some() && artifact.manifest_path.is_some() {
@@ -563,8 +615,11 @@ async fn build_host_apk(
         }
     }
 
-    println!("Compiled {} AAR resource libraries with {} total .flat files",
-             aar_packages.len(), aar_flat_files.len());
+    println!(
+        "Compiled {} AAR resource libraries with {} total .flat files",
+        aar_packages.len(),
+        aar_flat_files.len()
+    );
 
     // Step 2.6: Merge AAR manifests into host manifest
     println!("📝 Merging AAR manifests...");
@@ -576,7 +631,15 @@ async fn build_host_apk(
     let r_java_gen_dir = build_dir.join("gen");
     std::fs::create_dir_all(&r_java_gen_dir)?;
 
-    sdk.generate_r_java_v2(&merged_manifest, &res_dir, &aar_flat_files, &aar_packages, &shared_ids_txt, &r_java_gen_dir, api_level).await?;
+    sdk.generate_r_java_v2(
+        &merged_manifest,
+        &res_dir,
+        &aar_flat_files,
+        &aar_packages,
+        &shared_ids_txt,
+        &r_java_gen_dir,
+    )
+    .await?;
 
     // Collect ALL R.java files (host + AARs) generated by --extra-packages
     let mut all_r_java_files = Vec::new();
@@ -592,12 +655,14 @@ async fn build_host_apk(
         .join("com/vampire/loader")
         .join("TestMetadata.java");
 
-    let classpath: Vec<&Path> = resolved_artifacts.iter()
+    let classpath: Vec<&Path> = resolved_artifacts
+        .iter()
         .map(|a| a.jar_path.as_path())
         .collect();
 
     // Compile all R.java files + host Java files
-    let mut java_files_to_compile: Vec<&Path> = all_r_java_files.iter().map(|p| p.as_path()).collect();
+    let mut java_files_to_compile: Vec<&Path> =
+        all_r_java_files.iter().map(|p| p.as_path()).collect();
     java_files_to_compile.push(&instrumentation_java);
     java_files_to_compile.push(&test_runner_java);
     java_files_to_compile.push(&test_metadata_java);
@@ -620,8 +685,14 @@ async fn build_host_apk(
     // DEX inputs: just Maven JARs (R.class files are in obj/ now)
     let dex_inputs: Vec<&Path> = classpath.clone();
 
-    eprintln!("DEBUG: Converting to DEX with {} JAR inputs", dex_inputs.len());
-    eprintln!("DEBUG:   obj dir: {} (contains all R.class files)", obj_dir.display());
+    eprintln!(
+        "DEBUG: Converting to DEX with {} JAR inputs",
+        dex_inputs.len()
+    );
+    eprintln!(
+        "DEBUG:   obj dir: {} (contains all R.class files)",
+        obj_dir.display()
+    );
 
     sdk.convert_to_dex(&[&obj_dir], &dex_inputs, &classes_dex, api_level)
         .await?;
@@ -633,23 +704,48 @@ async fn build_host_apk(
     for artifact in &resolved_artifacts {
         for (arch, lib_path) in &artifact.native_libs {
             let target_dir = libs_dir.join(arch);
-            std::fs::create_dir_all(&target_dir)
-                .map_err(|e| format!("Failed to create lib/{} directory {}: {}", arch, target_dir.display(), e))?;
+            std::fs::create_dir_all(&target_dir).map_err(|e| {
+                format!(
+                    "Failed to create lib/{} directory {}: {}",
+                    arch,
+                    target_dir.display(),
+                    e
+                )
+            })?;
 
             let lib_name = lib_path.file_name().ok_or("Invalid library path")?;
             let target_path = target_dir.join(lib_name);
 
-            std::fs::copy(lib_path, &target_path)
-                .map_err(|e| format!("Failed to copy {} to {}: {}", lib_path.display(), target_path.display(), e))?;
+            std::fs::copy(lib_path, &target_path).map_err(|e| {
+                format!(
+                    "Failed to copy {} to {}: {}",
+                    lib_path.display(),
+                    target_path.display(),
+                    e
+                )
+            })?;
 
-            eprintln!("Copied Maven native library: {} -> {}", lib_path.display(), target_path.display());
+            eprintln!(
+                "Copied Maven native library: {} -> {}",
+                lib_path.display(),
+                target_path.display()
+            );
         }
     }
 
     // Step 4: Package APK with aapt2 (merges host + AAR resources)
     let unsigned_apk = build_dir.join(format!("{}-unsigned.apk", APK_NAME));
-    sdk.package_apk_v2(&merged_manifest, &res_dir, &aar_flat_files, &aar_packages, &shared_ids_txt, &classes_dex, &libs_dir, &unsigned_apk, api_level)
-        .await?;
+    sdk.package_apk_v2(
+        &merged_manifest,
+        &res_dir,
+        &aar_flat_files,
+        &aar_packages,
+        &shared_ids_txt,
+        &classes_dex,
+        &libs_dir,
+        &unsigned_apk,
+    )
+    .await?;
 
     // Step 5: Align APK (must be done before signing with apksigner)
     let aligned_apk = build_dir.join(format!("{}-aligned.apk", APK_NAME));
@@ -672,14 +768,27 @@ async fn build_host_apk(
 
     // Copy to output directory
     let final_apk = output_dir.join(format!("{}.apk", APK_NAME));
-    std::fs::copy(&signed_apk, &final_apk)
-        .map_err(|e| format!("Failed to copy {} to {}: {}", signed_apk.display(), final_apk.display(), e))?;
+    std::fs::copy(&signed_apk, &final_apk).map_err(|e| {
+        format!(
+            "Failed to copy {} to {}: {}",
+            signed_apk.display(),
+            final_apk.display(),
+            e
+        )
+    })?;
 
     println!("✅ Host APK created: {}", final_apk.display());
     Ok(())
 }
 
-async fn run_tests(device: Option<String>, force: bool, nocapture: bool, trace: bool, logcat_filters: Vec<String>, test_filter: Option<String>) {
+async fn run_tests(
+    device: Option<String>,
+    force: bool,
+    nocapture: bool,
+    trace: bool,
+    logcat_filters: Vec<String>,
+    test_filter: Option<String>,
+) {
     println!("🧪 Running tests...");
 
     // Find Android SDK for adb
@@ -877,7 +986,7 @@ async fn run_tests(device: Option<String>, force: bool, nocapture: bool, trace: 
 
     // Build logcat filters: start with base filters, then add user-specified ones
     let mut filters: Vec<String> = if trace {
-        vec![]  // No filtering with --trace
+        vec![] // No filtering with --trace
     } else if nocapture {
         vec!["TestRunner:*".to_string(), "*:F".to_string()]
     } else {
@@ -973,11 +1082,7 @@ async fn run_tests(device: Option<String>, force: bool, nocapture: bool, trace: 
 
     // Add test filter if specified
     if let Some(filter) = &test_filter {
-        test_args.extend_from_slice(&[
-            "-e".to_string(),
-            "test_filter".to_string(),
-            filter.clone(),
-        ]);
+        test_args.extend_from_slice(&["-e".to_string(), "test_filter".to_string(), filter.clone()]);
     }
 
     test_args.push(format!("{}/.{}", HOST_PACKAGE, INSTRUMENTATION_CLASS));
@@ -1161,7 +1266,8 @@ async fn update_dependencies() {
 
     println!("\n✅ Updated {} artifact(s)", artifacts.len());
     for artifact in &artifacts {
-        println!("   - {}:{}:{}",
+        println!(
+            "   - {}:{}:{}",
             artifact.coordinate.group_id,
             artifact.coordinate.artifact_id,
             artifact.coordinate.version

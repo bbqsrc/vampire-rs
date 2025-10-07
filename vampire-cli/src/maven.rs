@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MavenCoordinate {
@@ -104,9 +104,6 @@ pub struct LockMetadata {
 pub struct DependencyNode {
     pub coordinate: MavenCoordinate,
     pub depth: usize,
-    pub is_transitive: bool,
-    pub download_urls: Vec<String>,
-    pub parent: Option<MavenCoordinate>,
     pub children: Vec<MavenCoordinate>,
 }
 
@@ -140,9 +137,9 @@ impl Version {
 
     fn is_compatible_with(&self, requested: &Version) -> bool {
         // Same major version, and >= minor.patch
-        self.major == requested.major &&
-        (self.minor > requested.minor ||
-         (self.minor == requested.minor && self.patch >= requested.patch))
+        self.major == requested.major
+            && (self.minor > requested.minor
+                || (self.minor == requested.minor && self.patch >= requested.patch))
     }
 }
 
@@ -159,8 +156,13 @@ impl MavenResolver {
             "https://repo.maven.apache.org/maven2".to_string(),
         ];
 
-        std::fs::create_dir_all(&cache_dir)
-            .map_err(|e| format!("Failed to create Maven cache directory {}: {}", cache_dir.display(), e))?;
+        std::fs::create_dir_all(&cache_dir).map_err(|e| {
+            format!(
+                "Failed to create Maven cache directory {}: {}",
+                cache_dir.display(),
+                e
+            )
+        })?;
 
         Ok(Self {
             client,
@@ -208,7 +210,11 @@ impl MavenResolver {
         Ok(())
     }
 
-    pub fn validate_lock(&self, lock: &VampireLock, requested_coords: &[String]) -> Result<bool, Box<dyn std::error::Error>> {
+    pub fn validate_lock(
+        &self,
+        lock: &VampireLock,
+        requested_coords: &[String],
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let requested_set: HashSet<String> = requested_coords
             .iter()
             .map(|c| {
@@ -262,8 +268,15 @@ impl MavenResolver {
 
         for coord_str in coordinates {
             let coord = MavenCoordinate::parse(coord_str)?;
-            self.resolve_recursive(&coord, 0, &mut resolved, &mut visited, &mut lock_artifacts, coord_str)
-                .await?;
+            self.resolve_recursive(
+                &coord,
+                0,
+                &mut resolved,
+                &mut visited,
+                &mut lock_artifacts,
+                coord_str,
+            )
+            .await?;
         }
 
         let mut artifacts = Vec::new();
@@ -298,14 +311,22 @@ impl MavenResolver {
             // Verify BLAKE3 checksum if available
             if let Some(ref expected_hash) = locked.blake3 {
                 let artifact_type = &locked.artifact_type;
-                let artifact_dir = self.cache_dir.join(&coord.group_id).join(&coord.artifact_id).join(&coord.version);
-                let artifact_file = artifact_dir.join(format!("{}-{}.{}", coord.artifact_id, coord.version, artifact_type));
+                let artifact_dir = self
+                    .cache_dir
+                    .join(&coord.group_id)
+                    .join(&coord.artifact_id)
+                    .join(&coord.version);
+                let artifact_file = artifact_dir.join(format!(
+                    "{}-{}.{}",
+                    coord.artifact_id, coord.version, artifact_type
+                ));
                 let actual_hash = Self::calculate_blake3(&artifact_file)?;
                 if &actual_hash != expected_hash {
                     return Err(format!(
                         "BLAKE3 checksum mismatch for {}: expected {}, got {}",
                         locked.resolved, expected_hash, actual_hash
-                    ).into());
+                    )
+                    .into());
                 }
             }
 
@@ -353,7 +374,9 @@ impl MavenResolver {
         resolved: &'a mut HashMap<String, DependencyNode>,
         visited: &'a mut HashSet<String>,
         parent: Option<MavenCoordinate>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error>>> + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error>>> + 'a>,
+    > {
         Box::pin(async move {
             let key = coord.key();
 
@@ -378,22 +401,9 @@ impl MavenResolver {
                 }
             }
 
-            // Generate download URLs for all repositories
-            let mut download_urls = Vec::new();
-            for repo in &self.repositories {
-                // Try AAR first, then JAR
-                for extension in ["aar", "jar"] {
-                    let path = coord.to_path(extension);
-                    download_urls.push(format!("{}/{}", repo, path));
-                }
-            }
-
             let node = DependencyNode {
                 coordinate: coord.clone(),
                 depth,
-                is_transitive: depth > 0,
-                download_urls,
-                parent: parent.clone(),
                 children: Vec::new(),
             };
             resolved.insert(key.clone(), node);
@@ -421,8 +431,14 @@ impl MavenResolver {
                     version: upgraded_version,
                 };
 
-                self.resolve_dry_run_recursive(&upgraded_coord, depth + 1, resolved, visited, Some(coord.clone()))
-                    .await?;
+                self.resolve_dry_run_recursive(
+                    &upgraded_coord,
+                    depth + 1,
+                    resolved,
+                    visited,
+                    Some(coord.clone()),
+                )
+                .await?;
             }
 
             Ok(())
@@ -437,7 +453,9 @@ impl MavenResolver {
         visited: &'a mut HashSet<String>,
         lock_artifacts: &'a mut Vec<LockedArtifact>,
         requested_version: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error>>> + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error>>> + 'a>,
+    > {
         Box::pin(async move {
             let key = coord.key();
 
@@ -454,8 +472,15 @@ impl MavenResolver {
 
             // Calculate BLAKE3 hash of the original AAR/JAR file
             let artifact_type = if artifact.is_aar { "aar" } else { "jar" };
-            let artifact_dir = self.cache_dir.join(&coord.group_id).join(&coord.artifact_id).join(&coord.version);
-            let artifact_file = artifact_dir.join(format!("{}-{}.{}", coord.artifact_id, coord.version, artifact_type));
+            let artifact_dir = self
+                .cache_dir
+                .join(&coord.group_id)
+                .join(&coord.artifact_id)
+                .join(&coord.version);
+            let artifact_file = artifact_dir.join(format!(
+                "{}-{}.{}",
+                coord.artifact_id, coord.version, artifact_type
+            ));
             let blake3_hash = Self::calculate_blake3(&artifact_file).ok();
 
             lock_artifacts.push(LockedArtifact {
@@ -482,9 +507,19 @@ impl MavenResolver {
                     version: upgraded_version,
                 };
 
-                let dep_requested = format!("{}:{}:{}", dep_coord.group_id, dep_coord.artifact_id, dep_coord.version);
-                self.resolve_recursive(&upgraded_coord, depth + 1, resolved, visited, lock_artifacts, &dep_requested)
-                    .await?;
+                let dep_requested = format!(
+                    "{}:{}:{}",
+                    dep_coord.group_id, dep_coord.artifact_id, dep_coord.version
+                );
+                self.resolve_recursive(
+                    &upgraded_coord,
+                    depth + 1,
+                    resolved,
+                    visited,
+                    lock_artifacts,
+                    &dep_requested,
+                )
+                .await?;
             }
 
             Ok(())
@@ -495,9 +530,18 @@ impl MavenResolver {
         &self,
         coord: &MavenCoordinate,
     ) -> Result<(ResolvedArtifact, Option<String>), Box<dyn std::error::Error>> {
-        let artifact_dir = self.cache_dir.join(&coord.group_id).join(&coord.artifact_id).join(&coord.version);
-        std::fs::create_dir_all(&artifact_dir)
-            .map_err(|e| format!("Failed to create artifact directory {}: {}", artifact_dir.display(), e))?;
+        let artifact_dir = self
+            .cache_dir
+            .join(&coord.group_id)
+            .join(&coord.artifact_id)
+            .join(&coord.version);
+        std::fs::create_dir_all(&artifact_dir).map_err(|e| {
+            format!(
+                "Failed to create artifact directory {}: {}",
+                artifact_dir.display(),
+                e
+            )
+        })?;
 
         // Try AAR first
         let aar_result = self.try_download(coord, "aar", &artifact_dir).await?;
@@ -509,7 +553,8 @@ impl MavenResolver {
         } else {
             // No AAR, try JAR
             let jar_result = self.try_download(coord, "jar", &artifact_dir).await?;
-            let jar_path = artifact_dir.join(format!("{}-{}.jar", coord.artifact_id, coord.version));
+            let jar_path =
+                artifact_dir.join(format!("{}-{}.jar", coord.artifact_id, coord.version));
 
             if jar_result.is_some() || jar_path.exists() {
                 ("jar", false, jar_result)
@@ -517,15 +562,24 @@ impl MavenResolver {
                 return Err(format!(
                     "Could not download {}:{}:{} - no AAR or JAR found in any repository",
                     coord.group_id, coord.artifact_id, coord.version
-                ).into());
+                )
+                .into());
             }
         };
 
-        let artifact_path = artifact_dir.join(format!("{}-{}.{}", coord.artifact_id, coord.version, extension));
+        let artifact_path = artifact_dir.join(format!(
+            "{}-{}.{}",
+            coord.artifact_id, coord.version, extension
+        ));
 
         // Verify the downloaded artifact is valid (both JAR and AAR are ZIP files)
-        let test_file = std::fs::File::open(&artifact_path)
-            .map_err(|e| format!("Failed to open downloaded artifact {}: {}", artifact_path.display(), e))?;
+        let test_file = std::fs::File::open(&artifact_path).map_err(|e| {
+            format!(
+                "Failed to open downloaded artifact {}: {}",
+                artifact_path.display(),
+                e
+            )
+        })?;
 
         zip::ZipArchive::new(test_file)
             .map_err(|e| format!(
@@ -539,16 +593,19 @@ impl MavenResolver {
             (artifact_path, Vec::new(), None, None, None, None)
         };
 
-        Ok((ResolvedArtifact {
-            coordinate: coord.clone(),
-            jar_path,
-            is_aar,
-            native_libs,
-            manifest_path,
-            res_dir,
-            r_txt_path,
-            package_name,
-        }, source_url))
+        Ok((
+            ResolvedArtifact {
+                coordinate: coord.clone(),
+                jar_path,
+                is_aar,
+                native_libs,
+                manifest_path,
+                res_dir,
+                r_txt_path,
+                package_name,
+            },
+            source_url,
+        ))
     }
 
     fn calculate_blake3(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -564,7 +621,10 @@ impl MavenResolver {
         extension: &str,
         output_dir: &Path,
     ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let output_file = output_dir.join(format!("{}-{}.{}", coord.artifact_id, coord.version, extension));
+        let output_file = output_dir.join(format!(
+            "{}-{}.{}",
+            coord.artifact_id, coord.version, extension
+        ));
 
         if output_file.exists() {
             // Verify existing file is valid (non-empty and valid ZIP for jar/aar)
@@ -582,7 +642,11 @@ impl MavenResolver {
             }
 
             // File exists but is corrupt/empty, delete it
-            eprintln!("Cached {} is corrupt, re-downloading: {}", extension, output_file.display());
+            eprintln!(
+                "Cached {} is corrupt, re-downloading: {}",
+                extension,
+                output_file.display()
+            );
             let _ = std::fs::remove_file(&output_file);
         }
 
@@ -612,7 +676,11 @@ impl MavenResolver {
                         let percent = (downloaded as f64 / total as f64) * 100.0;
                         print!("Downloading archive {}: {:.2}%\r", coord2.key(), percent);
                     } else {
-                        print!("Downloading archive {}: {} bytes\r", coord2.key(), downloaded);
+                        print!(
+                            "Downloading archive {}: {} bytes\r",
+                            coord2.key(),
+                            downloaded
+                        );
                     }
                 })
                 .send()
@@ -620,7 +688,13 @@ impl MavenResolver {
 
             match res {
                 Ok(_) => {
-                    println!("Downloaded {}:{}:{} to {}", coord.group_id, coord.artifact_id, coord.version, output_file.display());
+                    println!(
+                        "Downloaded {}:{}:{} to {}",
+                        coord.group_id,
+                        coord.artifact_id,
+                        coord.version,
+                        output_file.display()
+                    );
                     return Ok(Some(url));
                 }
                 Err(e) => {
@@ -650,15 +724,30 @@ impl MavenResolver {
         &self,
         coord: &MavenCoordinate,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let pom_dir = self.cache_dir.join(&coord.group_id).join(&coord.artifact_id).join(&coord.version);
-        std::fs::create_dir_all(&pom_dir)
-            .map_err(|e| format!("Failed to create POM directory {}: {}", pom_dir.display(), e))?;
+        let pom_dir = self
+            .cache_dir
+            .join(&coord.group_id)
+            .join(&coord.artifact_id)
+            .join(&coord.version);
+        std::fs::create_dir_all(&pom_dir).map_err(|e| {
+            format!(
+                "Failed to create POM directory {}: {}",
+                pom_dir.display(),
+                e
+            )
+        })?;
 
         let pom_file = pom_dir.join(format!("{}-{}.pom", coord.artifact_id, coord.version));
 
         if pom_file.exists() {
-            return std::fs::read_to_string(&pom_file)
-                .map_err(|e| format!("Failed to read cached POM file {}: {}", pom_file.display(), e).into());
+            return std::fs::read_to_string(&pom_file).map_err(|e| {
+                format!(
+                    "Failed to read cached POM file {}: {}",
+                    pom_file.display(),
+                    e
+                )
+                .into()
+            });
         }
 
         let path = coord.to_path("pom");
@@ -695,9 +784,18 @@ impl MavenResolver {
 
             match res {
                 Ok(_) => {
-                    println!("Downloaded POM for {}:{}:{}", coord.group_id, coord.artifact_id, coord.version);
-                    return std::fs::read_to_string(&pom_file)
-                        .map_err(|e| format!("Failed to read downloaded POM file {}: {}", pom_file.display(), e).into());
+                    println!(
+                        "Downloaded POM for {}:{}:{}",
+                        coord.group_id, coord.artifact_id, coord.version
+                    );
+                    return std::fs::read_to_string(&pom_file).map_err(|e| {
+                        format!(
+                            "Failed to read downloaded POM file {}: {}",
+                            pom_file.display(),
+                            e
+                        )
+                        .into()
+                    });
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -711,7 +809,11 @@ impl MavenResolver {
             }
         }
 
-        Err(format!("Could not download POM for {}:{}:{} from any repository", coord.group_id, coord.artifact_id, coord.version).into())
+        Err(format!(
+            "Could not download POM for {}:{}:{} from any repository",
+            coord.group_id, coord.artifact_id, coord.version
+        )
+        .into())
     }
 
     async fn download_maven_metadata(
@@ -724,21 +826,23 @@ impl MavenResolver {
             let url = format!("{}/{}", repo, metadata_path);
 
             match self.client.get(url.as_str()) {
-                Ok(builder) => {
-                    match builder.send().await {
-                        Ok(response) => {
-                            if let Ok(body) = response.text().await {
-                                return Ok(body);
-                            }
+                Ok(builder) => match builder.send().await {
+                    Ok(response) => {
+                        if let Ok(body) = response.text().await {
+                            return Ok(body);
                         }
-                        Err(_) => continue,
                     }
-                }
+                    Err(_) => continue,
+                },
                 Err(_) => continue,
             }
         }
 
-        Err(format!("Could not download maven-metadata.xml for {}:{} from any repository", coord.group_id, coord.artifact_id).into())
+        Err(format!(
+            "Could not download maven-metadata.xml for {}:{} from any repository",
+            coord.group_id, coord.artifact_id
+        )
+        .into())
     }
 
     fn parse_versions_from_metadata(&self, metadata_xml: &str) -> Vec<String> {
@@ -754,7 +858,8 @@ impl MavenResolver {
                         if versioning_child.name(&doc) == "versions" {
                             for version_elem in versioning_child.children(&doc) {
                                 if version_elem.name(&doc) == "version" {
-                                    if let Some(text_node) = version_elem.child_nodes(&doc).first() {
+                                    if let Some(text_node) = version_elem.child_nodes(&doc).first()
+                                    {
                                         if let xmlem::key::Node::Text(t) = text_node {
                                             versions.push(t.as_str(&doc).to_string());
                                         }
@@ -807,7 +912,12 @@ impl MavenResolver {
         }
 
         if best_version != coord.version {
-            eprintln!("⬆️  Upgrading {} from {} to {}", coord.key(), coord.version, best_version);
+            eprintln!(
+                "⬆️  Upgrading {} from {} to {}",
+                coord.key(),
+                coord.version,
+                best_version
+            );
         }
 
         Ok(best_version)
@@ -822,7 +932,11 @@ impl MavenResolver {
             // Extract version from range syntax like [2.5.1] or [1.0,2.0)
             let inner = trimmed.trim_start_matches('[').trim_start_matches('(');
             let version_part = inner.split(',').next().unwrap_or(inner);
-            version_part.trim_end_matches(']').trim_end_matches(')').trim().to_string()
+            version_part
+                .trim_end_matches(']')
+                .trim_end_matches(')')
+                .trim()
+                .to_string()
         } else {
             trimmed.to_string()
         }
@@ -872,21 +986,28 @@ impl MavenResolver {
                             "groupId" => {
                                 if let Some(text_node) = field.child_nodes(&doc).first() {
                                     if let xmlem::key::Node::Text(t) = text_node {
-                                        group_id = Some(Self::resolve_property(t.as_str(&doc), current_coord));
+                                        group_id = Some(Self::resolve_property(
+                                            t.as_str(&doc),
+                                            current_coord,
+                                        ));
                                     }
                                 }
                             }
                             "artifactId" => {
                                 if let Some(text_node) = field.child_nodes(&doc).first() {
                                     if let xmlem::key::Node::Text(t) = text_node {
-                                        artifact_id = Some(Self::resolve_property(t.as_str(&doc), current_coord));
+                                        artifact_id = Some(Self::resolve_property(
+                                            t.as_str(&doc),
+                                            current_coord,
+                                        ));
                                     }
                                 }
                             }
                             "version" => {
                                 if let Some(text_node) = field.child_nodes(&doc).first() {
                                     if let xmlem::key::Node::Text(t) = text_node {
-                                        let resolved = Self::resolve_property(t.as_str(&doc), current_coord);
+                                        let resolved =
+                                            Self::resolve_property(t.as_str(&doc), current_coord);
                                         version = Some(Self::normalize_version(&resolved));
                                     }
                                 }
@@ -908,7 +1029,9 @@ impl MavenResolver {
                         continue;
                     }
 
-                    if let (Some(group), Some(artifact), Some(ver)) = (group_id, artifact_id, version) {
+                    if let (Some(group), Some(artifact), Some(ver)) =
+                        (group_id, artifact_id, version)
+                    {
                         dependencies.push(MavenCoordinate {
                             group_id: group,
                             artifact_id: artifact,
@@ -926,11 +1049,26 @@ impl MavenResolver {
         &self,
         aar_path: &Path,
         output_dir: &Path,
-    ) -> Result<(PathBuf, Vec<(String, PathBuf)>, Option<PathBuf>, Option<PathBuf>, Option<PathBuf>, Option<String>), Box<dyn std::error::Error>> {
+    ) -> Result<
+        (
+            PathBuf,
+            Vec<(String, PathBuf)>,
+            Option<PathBuf>,
+            Option<PathBuf>,
+            Option<PathBuf>,
+            Option<String>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
         let file = std::fs::File::open(aar_path)
             .map_err(|e| format!("Failed to open AAR file {}: {}", aar_path.display(), e))?;
-        let mut archive = zip::ZipArchive::new(file)
-            .map_err(|e| format!("Failed to read AAR as ZIP archive {}: {}", aar_path.display(), e))?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+            format!(
+                "Failed to read AAR as ZIP archive {}: {}",
+                aar_path.display(),
+                e
+            )
+        })?;
 
         let classes_jar_path = output_dir.join("classes.jar");
         let mut native_libs = Vec::new();
@@ -941,31 +1079,60 @@ impl MavenResolver {
         let mut found_classes_jar = false;
 
         for i in 0..archive.len() {
-            let mut file = archive.by_index(i)
-                .map_err(|e| format!("Failed to read entry {} from AAR {}: {}", i, aar_path.display(), e))?;
+            let mut file = archive.by_index(i).map_err(|e| {
+                format!(
+                    "Failed to read entry {} from AAR {}: {}",
+                    i,
+                    aar_path.display(),
+                    e
+                )
+            })?;
             let name = file.name().to_string();
 
             if name == "classes.jar" {
-                let mut outfile = std::fs::File::create(&classes_jar_path)
-                    .map_err(|e| format!("Failed to create classes.jar at {}: {}", classes_jar_path.display(), e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("Failed to extract classes.jar from {} to {}: {}", aar_path.display(), classes_jar_path.display(), e))?;
+                let mut outfile = std::fs::File::create(&classes_jar_path).map_err(|e| {
+                    format!(
+                        "Failed to create classes.jar at {}: {}",
+                        classes_jar_path.display(),
+                        e
+                    )
+                })?;
+                std::io::copy(&mut file, &mut outfile).map_err(|e| {
+                    format!(
+                        "Failed to extract classes.jar from {} to {}: {}",
+                        aar_path.display(),
+                        classes_jar_path.display(),
+                        e
+                    )
+                })?;
                 found_classes_jar = true;
             } else if name == "AndroidManifest.xml" {
                 let manifest_file_path = output_dir.join("AndroidManifest.xml");
 
                 // Read manifest contents to print
                 let mut manifest_contents = Vec::new();
-                std::io::copy(&mut file, &mut manifest_contents)
-                    .map_err(|e| format!("Failed to read AndroidManifest.xml from {}: {}", aar_path.display(), e))?;
+                std::io::copy(&mut file, &mut manifest_contents).map_err(|e| {
+                    format!(
+                        "Failed to read AndroidManifest.xml from {}: {}",
+                        aar_path.display(),
+                        e
+                    )
+                })?;
 
                 // Write to file
-                std::fs::write(&manifest_file_path, &manifest_contents)
-                    .map_err(|e| format!("Failed to write AndroidManifest.xml to {}: {}", manifest_file_path.display(), e))?;
+                std::fs::write(&manifest_file_path, &manifest_contents).map_err(|e| {
+                    format!(
+                        "Failed to write AndroidManifest.xml to {}: {}",
+                        manifest_file_path.display(),
+                        e
+                    )
+                })?;
 
                 // Parse package name from manifest
                 if let Ok(manifest_str) = String::from_utf8(manifest_contents.clone()) {
-                    if let Ok(doc) = xmlem::Document::from_reader(std::io::Cursor::new(&manifest_str)) {
+                    if let Ok(doc) =
+                        xmlem::Document::from_reader(std::io::Cursor::new(&manifest_str))
+                    {
                         let root = doc.root();
                         if let Some(pkg) = root.attribute(&doc, "package") {
                             package_name = Some(pkg.to_string());
@@ -985,32 +1152,59 @@ impl MavenResolver {
             } else if name == "R.txt" {
                 // Extract R.txt
                 let r_txt_file_path = output_dir.join("R.txt");
-                let mut outfile = std::fs::File::create(&r_txt_file_path)
-                    .map_err(|e| format!("Failed to create R.txt at {}: {}", r_txt_file_path.display(), e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("Failed to extract R.txt from {}: {}", aar_path.display(), e))?;
+                let mut outfile = std::fs::File::create(&r_txt_file_path).map_err(|e| {
+                    format!(
+                        "Failed to create R.txt at {}: {}",
+                        r_txt_file_path.display(),
+                        e
+                    )
+                })?;
+                std::io::copy(&mut file, &mut outfile).map_err(|e| {
+                    format!("Failed to extract R.txt from {}: {}", aar_path.display(), e)
+                })?;
                 r_txt_path = Some(r_txt_file_path);
                 eprintln!("Extracted R.txt from AAR: {}", aar_path.display());
             } else if name.starts_with("res/") && !name.ends_with('/') {
                 // Extract resource files
                 let res_output_dir = output_dir.join("res");
                 if res_dir.is_none() {
-                    std::fs::create_dir_all(&res_output_dir)
-                        .map_err(|e| format!("Failed to create res directory {}: {}", res_output_dir.display(), e))?;
+                    std::fs::create_dir_all(&res_output_dir).map_err(|e| {
+                        format!(
+                            "Failed to create res directory {}: {}",
+                            res_output_dir.display(),
+                            e
+                        )
+                    })?;
                     res_dir = Some(res_output_dir.clone());
                 }
 
                 // Get relative path within res/
                 let res_file_path = output_dir.join(&name);
                 if let Some(parent) = res_file_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to create resource subdirectory {}: {}", parent.display(), e))?;
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        format!(
+                            "Failed to create resource subdirectory {}: {}",
+                            parent.display(),
+                            e
+                        )
+                    })?;
                 }
 
-                let mut outfile = std::fs::File::create(&res_file_path)
-                    .map_err(|e| format!("Failed to create resource file at {}: {}", res_file_path.display(), e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("Failed to extract {} from {}: {}", name, aar_path.display(), e))?;
+                let mut outfile = std::fs::File::create(&res_file_path).map_err(|e| {
+                    format!(
+                        "Failed to create resource file at {}: {}",
+                        res_file_path.display(),
+                        e
+                    )
+                })?;
+                std::io::copy(&mut file, &mut outfile).map_err(|e| {
+                    format!(
+                        "Failed to extract {} from {}: {}",
+                        name,
+                        aar_path.display(),
+                        e
+                    )
+                })?;
             } else if name.starts_with("jni/") && name.ends_with(".so") {
                 // Extract native library: jni/<arch>/libname.so
                 let parts: Vec<&str> = name.split('/').collect();
@@ -1020,16 +1214,37 @@ impl MavenResolver {
 
                     // Create arch-specific output directory
                     let arch_dir = output_dir.join("jni").join(arch);
-                    std::fs::create_dir_all(&arch_dir)
-                        .map_err(|e| format!("Failed to create jni/{} directory {}: {}", arch, arch_dir.display(), e))?;
+                    std::fs::create_dir_all(&arch_dir).map_err(|e| {
+                        format!(
+                            "Failed to create jni/{} directory {}: {}",
+                            arch,
+                            arch_dir.display(),
+                            e
+                        )
+                    })?;
 
                     let lib_path = arch_dir.join(lib_name);
-                    let mut outfile = std::fs::File::create(&lib_path)
-                        .map_err(|e| format!("Failed to create native library at {}: {}", lib_path.display(), e))?;
-                    std::io::copy(&mut file, &mut outfile)
-                        .map_err(|e| format!("Failed to extract {} from {}: {}", name, aar_path.display(), e))?;
+                    let mut outfile = std::fs::File::create(&lib_path).map_err(|e| {
+                        format!(
+                            "Failed to create native library at {}: {}",
+                            lib_path.display(),
+                            e
+                        )
+                    })?;
+                    std::io::copy(&mut file, &mut outfile).map_err(|e| {
+                        format!(
+                            "Failed to extract {} from {}: {}",
+                            name,
+                            aar_path.display(),
+                            e
+                        )
+                    })?;
 
-                    eprintln!("Extracted native library: {} -> {}", name, lib_path.display());
+                    eprintln!(
+                        "Extracted native library: {} -> {}",
+                        name,
+                        lib_path.display()
+                    );
                     native_libs.push((arch.to_string(), lib_path));
                 }
             }
@@ -1037,48 +1252,69 @@ impl MavenResolver {
 
         // If no classes.jar found, create an empty one (some AARs are metadata-only)
         if !found_classes_jar {
-            eprintln!("No classes.jar in AAR {}, creating empty JAR", aar_path.display());
+            eprintln!(
+                "No classes.jar in AAR {}, creating empty JAR",
+                aar_path.display()
+            );
 
             // Create empty JAR file
-            let empty_jar = std::fs::File::create(&classes_jar_path)
-                .map_err(|e| format!("Failed to create empty classes.jar at {}: {}", classes_jar_path.display(), e))?;
+            let empty_jar = std::fs::File::create(&classes_jar_path).map_err(|e| {
+                format!(
+                    "Failed to create empty classes.jar at {}: {}",
+                    classes_jar_path.display(),
+                    e
+                )
+            })?;
 
             let mut zip_writer = zip::ZipWriter::new(empty_jar);
 
             // Add a minimal manifest to make it a valid JAR
             let options = zip::write::FileOptions::<()>::default()
                 .compression_method(zip::CompressionMethod::Stored);
-            zip_writer.start_file("META-INF/MANIFEST.MF", options)
+            zip_writer
+                .start_file("META-INF/MANIFEST.MF", options)
                 .map_err(|e| format!("Failed to create manifest in empty JAR: {}", e))?;
-            zip_writer.write_all(b"Manifest-Version: 1.0\n")
+            zip_writer
+                .write_all(b"Manifest-Version: 1.0\n")
                 .map_err(|e| format!("Failed to write manifest: {}", e))?;
 
-            zip_writer.finish()
+            zip_writer
+                .finish()
                 .map_err(|e| format!("Failed to finalize empty JAR: {}", e))?;
         }
 
-        Ok((classes_jar_path, native_libs, manifest_path, res_dir, r_txt_path, package_name))
+        Ok((
+            classes_jar_path,
+            native_libs,
+            manifest_path,
+            res_dir,
+            r_txt_path,
+            package_name,
+        ))
     }
 
     pub fn print_dependency_tree(&self, nodes: &[DependencyNode]) {
         eprintln!("\nDependency Tree:");
 
         // Find root nodes (depth 0, no parent)
-        let roots: Vec<_> = nodes.iter()
-            .filter(|n| n.depth == 0)
-            .collect();
+        let roots: Vec<_> = nodes.iter().filter(|n| n.depth == 0).collect();
 
         // Build a map for quick lookup
-        let node_map: HashMap<String, &DependencyNode> = nodes.iter()
-            .map(|n| (n.coordinate.key(), n))
-            .collect();
+        let node_map: HashMap<String, &DependencyNode> =
+            nodes.iter().map(|n| (n.coordinate.key(), n)).collect();
 
         for root in roots {
             self.print_node_recursive(root, &node_map, "", true);
         }
     }
 
-    fn print_node_recursive(&self, node: &DependencyNode, node_map: &HashMap<String, &DependencyNode>, prefix: &str, is_last: bool) {
+    fn print_node_recursive(
+        &self,
+        node: &DependencyNode,
+        node_map: &HashMap<String, &DependencyNode>,
+        prefix: &str,
+        is_last: bool,
+    ) {
         let connector = if is_last { "└── " } else { "├── " };
         eprintln!("{}{}{}", prefix, connector, node.coordinate);
 

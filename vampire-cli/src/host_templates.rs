@@ -30,13 +30,18 @@ pub fn generate_android_manifest(
         ));
     }
 
-    manifest.push_str("\n    <application android:label=\"Vampire Host\" android:debuggable=\"true\">\n");
+    manifest.push_str(
+        "\n    <application android:label=\"Vampire Host\" android:debuggable=\"true\">\n",
+    );
     manifest.push_str("        <!-- Minimal instrumentation for running tests -->\n");
     manifest.push_str("        <uses-library android:name=\"android.test.runner\" />\n");
 
     // Add services
     for service in services {
-        manifest.push_str(&format!("        <service android:name=\"{}\"", service.name));
+        manifest.push_str(&format!(
+            "        <service android:name=\"{}\"",
+            service.name
+        ));
         for (key, value) in &service.attributes {
             manifest.push_str(&format!(" android:{}=\"{}\"", key, value));
         }
@@ -45,7 +50,10 @@ pub fn generate_android_manifest(
 
     // Add receivers
     for receiver in receivers {
-        manifest.push_str(&format!("        <receiver android:name=\"{}\"", receiver.name));
+        manifest.push_str(&format!(
+            "        <receiver android:name=\"{}\"",
+            receiver.name
+        ));
         for (key, value) in &receiver.attributes {
             manifest.push_str(&format!(" android:{}=\"{}\"", key, value));
         }
@@ -101,7 +109,10 @@ fn generate_resource_xml(resources: &toml::Table) -> String {
                 xml.push_str("    </string-array>\n");
             }
             _ => {
-                eprintln!("Warning: Unsupported resource type for '{}', skipping", name);
+                eprintln!(
+                    "Warning: Unsupported resource type for '{}', skipping",
+                    name
+                );
             }
         }
     }
@@ -129,10 +140,14 @@ pub fn write_host_files(
     std::fs::create_dir_all(&java_loader_dir)?;
 
     // Write files
-    let manifest_content = generate_android_manifest(permissions, &components.services, &components.receivers);
+    let manifest_content =
+        generate_android_manifest(permissions, &components.services, &components.receivers);
     std::fs::write(&manifest_path, manifest_content)?;
     std::fs::write(res_values_dir.join("strings.xml"), STRINGS_XML)?;
-    std::fs::write(res_xml_dir.join("network_security_config.xml"), NETWORK_SECURITY_CONFIG)?;
+    std::fs::write(
+        res_xml_dir.join("network_security_config.xml"),
+        NETWORK_SECURITY_CONFIG,
+    )?;
     std::fs::write(
         java_host_dir.join("VampireInstrumentation.java"),
         VAMPIRE_INSTRUMENTATION,

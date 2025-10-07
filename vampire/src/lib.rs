@@ -1,8 +1,8 @@
 // Re-export JNI types for convenience
 pub use jni::{
-    objects::{JClass, JObject},
-    sys::{jboolean, jstring, JavaVM, JNI_FALSE, JNI_TRUE},
     JNIEnv,
+    objects::{JClass, JObject},
+    sys::{JNI_FALSE, JNI_TRUE, JavaVM, jboolean, jstring},
 };
 
 // Re-export inventory for macro use
@@ -11,7 +11,7 @@ pub use inventory;
 // Re-export the test macro
 pub use vampire_macro::test;
 
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 use std::ptr::null_mut;
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ pub struct TestEntry {
 inventory::collect!(TestEntry);
 
 /// Get all registered tests as an array of TestMetadata objects
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_vampire_loader_TestRunner_getTestManifest(
     mut env: JNIEnv,
     _class: JClass,
@@ -94,7 +94,7 @@ pub extern "system" fn Java_com_vampire_loader_TestRunner_getTestManifest(
 }
 
 /// Invoke a test by name
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_vampire_loader_TestRunner_invokeTestNative(
     mut env: JNIEnv,
     _class: JClass,
@@ -167,7 +167,7 @@ pub fn log_error(tag: &str, message: &str) {
 // Global JavaVM pointer for async runtime access
 static mut GLOBAL_VM: *mut c_void = null_mut();
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(
     vm: *mut JavaVM,
     _reserved: *mut std::ffi::c_void,
@@ -181,7 +181,7 @@ pub extern "system" fn JNI_OnLoad(
 }
 
 pub unsafe fn java_vm() -> *mut c_void {
-    GLOBAL_VM
+    unsafe { GLOBAL_VM }
 }
 
 /// Check if a Java exception is pending and log it to stderr
@@ -196,7 +196,8 @@ pub fn check_and_log_exception(env: &mut JNIEnv) -> Option<String> {
         let _ = env.exception_clear();
 
         // Get exception message
-        let message = env.call_method(&exception, "getMessage", "()Ljava/lang/String;", &[])
+        let message = env
+            .call_method(&exception, "getMessage", "()Ljava/lang/String;", &[])
             .ok()
             .and_then(|v| v.l().ok())
             .and_then(|obj| {
@@ -206,7 +207,8 @@ pub fn check_and_log_exception(env: &mut JNIEnv) -> Option<String> {
 
         // Get exception class name
         let class = env.get_object_class(&exception).ok()?;
-        let class_name = env.call_method(&class, "getName", "()Ljava/lang/String;", &[])
+        let class_name = env
+            .call_method(&class, "getName", "()Ljava/lang/String;", &[])
             .ok()
             .and_then(|v| v.l().ok())
             .and_then(|obj| {
@@ -241,7 +243,10 @@ where
 
         // Check for pending exceptions before returning
         if let Some(exc_msg) = check_and_log_exception(&mut env) {
-            log_error("TestRunner", &format!("Exception in with_jni_env: {}", exc_msg));
+            log_error(
+                "TestRunner",
+                &format!("Exception in with_jni_env: {}", exc_msg),
+            );
             return None;
         }
 

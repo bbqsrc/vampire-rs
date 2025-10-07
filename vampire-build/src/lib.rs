@@ -95,8 +95,11 @@ impl Builder {
             panic!("Failed to convert to DEX: {}", e);
         }
 
-        println!("cargo:warning=Compiled {} Java source(s) and generated DEX at {}",
-                 java_sources.len(), dex_output.display());
+        println!(
+            "cargo:warning=Compiled {} Java source(s) and generated DEX at {}",
+            java_sources.len(),
+            dex_output.display()
+        );
     }
 
     fn find_java_sources(&self) -> Vec<PathBuf> {
@@ -110,7 +113,11 @@ impl Builder {
 
         let mut sources = Vec::new();
         if let Err(e) = find_java_files_recursive(java_dir, &mut sources) {
-            eprintln!("Warning: Failed to scan Java directory {}: {}", java_dir.display(), e);
+            eprintln!(
+                "Warning: Failed to scan Java directory {}: {}",
+                java_dir.display(),
+                e
+            );
         }
 
         sources
@@ -137,7 +144,9 @@ impl Builder {
 
         cmd.args(sources);
 
-        let output = cmd.output().map_err(|e| format!("Failed to run javac: {}", e))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run javac: {}", e))?;
 
         if !output.status.success() {
             return Err(format!(
@@ -152,13 +161,13 @@ impl Builder {
     fn convert_to_dex(&self, classes_dir: &Path, dex_output: &Path) -> Result<(), String> {
         // Find d8 tool and Android SDK
         let d8_path = find_d8().ok_or_else(|| {
-            "d8 not found. Please set ANDROID_SDK_ROOT or ANDROID_HOME environment variable".to_string()
+            "d8 not found. Please set ANDROID_SDK_ROOT or ANDROID_HOME environment variable"
+                .to_string()
         })?;
 
         // Find android.jar for the target SDK
-        let android_jar = find_android_jar(self.target_sdk).ok_or_else(|| {
-            format!("android.jar not found for API level {}", self.target_sdk)
-        })?;
+        let android_jar = find_android_jar(self.target_sdk)
+            .ok_or_else(|| format!("android.jar not found for API level {}", self.target_sdk))?;
 
         // Collect all .class files
         let mut class_files = Vec::new();
@@ -177,7 +186,9 @@ impl Builder {
             .arg(&android_jar)
             .args(&class_files);
 
-        let output = cmd.output().map_err(|e| format!("Failed to run d8: {}", e))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run d8: {}", e))?;
 
         if !output.status.success() {
             return Err(format!(
