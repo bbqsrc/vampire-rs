@@ -2656,7 +2656,7 @@ dependencies = [
 [[package]]
 name = "vampire"
 version = "0.1.0"
-source = "git+https://github.com/bbqsrc/vampire-rs#81b2c51e1d44358e96d1ac4baf3c6d26271fc066"
+source = "git+https://github.com/bbqsrc/vampire-rs#7a27d92a89460c99534689191d774efd1159401b"
 dependencies = [
  "inventory",
  "jni",
@@ -2703,7 +2703,7 @@ dependencies = [
 [[package]]
 name = "vampire-macro"
 version = "0.1.0"
-source = "git+https://github.com/bbqsrc/vampire-rs#81b2c51e1d44358e96d1ac4baf3c6d26271fc066"
+source = "git+https://github.com/bbqsrc/vampire-rs#7a27d92a89460c99534689191d774efd1159401b"
 dependencies = [
  "proc-macro2",
  "quote",
